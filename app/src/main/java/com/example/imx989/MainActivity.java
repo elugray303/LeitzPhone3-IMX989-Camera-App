@@ -1,7 +1,7 @@
 package com.example.imx989;
 
 import android.Manifest;
-import android.content.ContentUris;
+import android.content.ContentUris; // Đã bổ sung import này
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -40,7 +40,6 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.provider.MediaStore;
-import android.util.Log;
 import android.util.Range;
 import android.util.Size;
 import android.view.Surface;
@@ -57,7 +56,6 @@ import androidx.constraintlayout.widget.ConstraintSet;
 import androidx.core.app.ActivityCompat;
 import androidx.exifinterface.media.ExifInterface;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -70,64 +68,58 @@ import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
-    // --- UI ELEMENTS ---
     private TextureView textureView;
-    private ImageButton btnCapture, btnSwitch, btnGallery, btnRatio;
-    private TextView btnHighRes, btnRaw; // Nút RAW và 50MP
-    private TextView txtZoomIndicator;
-    private TextView modeVideo, modePhoto, modeManual, modeLeitz;
+    private ImageButton btnCapture, btnGallery, btnRatio, btnSwitch;
+    private TextView btnHighRes, btnRaw;
+    private TextView txtZoomIndicator, modeVideo, modePhoto, modeManual, modeLeitz;
     private ConstraintLayout mainLayout;
 
-    // --- MANAGERS ---
-    private ManualUIManager manualManager; // Gọi class quản lý Manual
-
-    // --- CAMERA VARIABLES ---
+    private ManualUIManager manualManager;
     private String cameraId;
     private CameraDevice cameraDevice;
     private CameraCaptureSession cameraCaptureSessions;
     private CaptureRequest.Builder captureRequestBuilder;
     private CameraCharacteristics mCharacteristics;
+
     private Size previewSize;
-    private Rect sensorArraySize;
-    private Rect sensorArraySizeHighRes;
+    private Rect sensorArraySize;        // 12MP Array
+    private Rect sensorArraySizeHighRes; // 50MP Array
 
-    // --- IMAGE READERS ---
-    private ImageReader imageReader;      // Cho JPEG
-    private ImageReader rawImageReader;   // Cho RAW
+    private ImageReader imageReaderNormal;  // Reader 12MP
+    private ImageReader imageReaderHighRes; // Reader 50MP
+    private ImageReader rawImageReader;     // Reader RAW (Max)
 
-    // --- THREAD ---
     private HandlerThread backgroundThread;
     private Handler backgroundHandler;
 
-    // --- STATE ---
     private boolean isDeviceSupportHighRes = false;
     private boolean isHighResEnabled = false;
-    private boolean isRawEnabled = false; // Trạng thái RAW
+    private boolean isRawEnabled = false;
     private boolean isManualMode = false;
+
     private int currentZoomLevel = 1;
     private float currentCropFactor = 0.2f;
     private int currentRatioIndex = 0;
 
     private Uri lastPhotoUri = null;
-
-    // --- RAW SYNCHRONIZATION VARIABLES (Sửa lỗi mất ảnh RAW) ---
+    private final Object mRawLock = new Object();
     private Image mPendingRawImage;
     private TotalCaptureResult mPendingCaptureResult;
-    private final Object mRawLock = new Object(); // Khóa đồng bộ
 
-    private static final int REQUEST_CAMERA_PERMISSION = 200;
+    private static final int REQUEST_PERMISSION_CODE = 200;
+    private static final String[] PERMISSIONS = {
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         mainLayout = findViewById(R.id.mainLayout);
-
         setupUIViews();
-
-        // Khởi tạo ManualManager
         manualManager = new ManualUIManager(this, this::updatePreview);
-
         setupListeners();
     }
 
@@ -150,6 +142,7 @@ public class MainActivity extends AppCompatActivity {
         btnCapture.setOnClickListener(v -> takePicture());
         txtZoomIndicator.setOnClickListener(v -> cycleZoom());
         btnRatio.setOnClickListener(v -> toggleAspectRatio());
+
         btnHighRes.setOnClickListener(v -> toggleHighResMode());
         btnRaw.setOnClickListener(v -> toggleRawMode());
 
@@ -159,88 +152,37 @@ public class MainActivity extends AppCompatActivity {
                 intent.setDataAndType(lastPhotoUri, "image/*");
                 intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 intent.setPackage("com.google.android.apps.photos");
-                try {
-                    startActivity(intent);
-                } catch (Exception e) {
-                    intent.setPackage(null);
-                    try { startActivity(intent); }
-                    catch (Exception ex) { Toast.makeText(this, "Không tìm thấy app!", Toast.LENGTH_SHORT).show(); }
-                }
-            } else {
-                Toast.makeText(this, "Thư viện trống", Toast.LENGTH_SHORT).show();
+                try { startActivity(intent); } catch (Exception e) {}
             }
         });
 
-        modeVideo.setOnClickListener(v -> switchMode(modeVideo, "VIDEO"));
-        modePhoto.setOnClickListener(v -> switchMode(modePhoto, "PHOTO"));
-        modeManual.setOnClickListener(v -> switchMode(modeManual, "MANUAL"));
-        modeLeitz.setOnClickListener(v -> switchMode(modeLeitz, "LEITZ"));
+        modeVideo.setOnClickListener(v -> {
+            Intent intent = new Intent(MainActivity.this, VideoActivity.class);
+            startActivity(intent);
+            overridePendingTransition(0, 0);
+        });
+
+        modeManual.setOnClickListener(v -> switchMode(modeManual, true));
+        modePhoto.setOnClickListener(v -> switchMode(modePhoto, false));
     }
 
-    // --- TOGGLE RAW ---
-    private void toggleRawMode() {
-        isRawEnabled = !isRawEnabled;
-        if (isRawEnabled) {
-            btnRaw.setTextColor(Color.parseColor("#FFD700"));
-            btnRaw.setAlpha(1.0f);
-            Toast.makeText(this, "RAW ON", Toast.LENGTH_SHORT).show();
-        } else {
-            btnRaw.setTextColor(Color.WHITE);
-            btnRaw.setAlpha(0.5f);
-            Toast.makeText(this, "RAW OFF", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    private void switchMode(TextView selectedMode, String modeName) {
-        modeVideo.setTextColor(Color.WHITE);
+    private void switchMode(TextView selectedMode, boolean manual) {
         modePhoto.setTextColor(Color.WHITE);
         modeManual.setTextColor(Color.WHITE);
-        modeLeitz.setTextColor(Color.WHITE);
         selectedMode.setTextColor(Color.parseColor("#D32F2F"));
-
-        if (modeName.equals("MANUAL")) {
-            isManualMode = true;
-            manualManager.show();
-            btnGallery.setVisibility(View.VISIBLE);
-            btnSwitch.setVisibility(View.INVISIBLE);
-        } else {
-            isManualMode = false;
-            manualManager.hide();
-            btnGallery.setVisibility(View.VISIBLE);
-            btnSwitch.setVisibility(View.VISIBLE);
-        }
+        isManualMode = manual;
+        if(manual) manualManager.show(); else manualManager.hide();
         updatePreview();
     }
 
-    private void updatePreview() {
-        if (cameraDevice == null || captureRequestBuilder == null) return;
-        try {
-            if (isManualMode) {
-                captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                if (manualManager.isManualExposure()) {
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF);
-                    captureRequestBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, manualManager.getISO());
-                    captureRequestBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualManager.getShutter());
-                } else {
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
-                }
-
-                if (manualManager.isManualFocus()) {
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
-                    captureRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualManager.getFocus());
-                } else {
-                    captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-                }
-            } else {
-                captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
-                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
-                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            }
-            cameraCaptureSessions.setRepeatingRequest(captureRequestBuilder.build(), captureCallback, backgroundHandler);
-        } catch (CameraAccessException e) { e.printStackTrace(); }
+    // --- LOGIC CHECK CHẾ ĐỘ ---
+    private boolean useHighResMode() {
+        // Kích hoạt chế độ HighRes khi: Bật nút 50MP HOẶC Bật nút RAW
+        return (isHighResEnabled || isRawEnabled)
+                && isDeviceSupportHighRes
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S;
     }
 
-    // --- OPEN CAMERA (SỬA LỖI SIZE RAW) ---
     private void openCamera() {
         CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         try {
@@ -258,48 +200,40 @@ public class MainActivity extends AppCompatActivity {
             }
             if (sensorArraySizeHighRes == null) sensorArraySizeHighRes = sensorArraySize;
 
-            StreamConfigurationMap map = mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            previewSize = chooseOptimalSize(map.getOutputSizes(SurfaceTexture.class), 1440, 1080);
-
-            // 1. SETUP JPEG
-            Size jpegSize = Collections.max(Arrays.asList(map.getOutputSizes(ImageFormat.JPEG)), new CompareSizesByArea());
-            if (isHighResEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                StreamConfigurationMap highResMap = mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION);
-                if (highResMap != null) {
-                    jpegSize = Collections.max(Arrays.asList(highResMap.getOutputSizes(ImageFormat.JPEG)), new CompareSizesByArea());
-                    isDeviceSupportHighRes = true;
-                }
+            StreamConfigurationMap mapNormal = mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            StreamConfigurationMap mapHighRes = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                mapHighRes = mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION);
+                isDeviceSupportHighRes = (mapHighRes != null);
             }
-            imageReader = ImageReader.newInstance(jpegSize.getWidth(), jpegSize.getHeight(), ImageFormat.JPEG, 2);
-            imageReader.setOnImageAvailableListener(jpegListener, backgroundHandler);
 
-            // 2. SETUP RAW (FIX CRASH KHI HIGHRES BẬT)
+            previewSize = chooseOptimalSize(mapNormal.getOutputSizes(SurfaceTexture.class), 1440, 1080);
+
+            // 1. SETUP NORMAL READER
+            Size sizeNormal = Collections.max(Arrays.asList(mapNormal.getOutputSizes(ImageFormat.JPEG)), new CompareSizesByArea());
+            imageReaderNormal = ImageReader.newInstance(sizeNormal.getWidth(), sizeNormal.getHeight(), ImageFormat.JPEG, 2);
+            imageReaderNormal.setOnImageAvailableListener(jpegListener, backgroundHandler);
+
+            // 2. SETUP HIGH RES READER
+            if (isDeviceSupportHighRes && mapHighRes != null) {
+                Size sizeHighRes = Collections.max(Arrays.asList(mapHighRes.getOutputSizes(ImageFormat.JPEG)), new CompareSizesByArea());
+                imageReaderHighRes = ImageReader.newInstance(sizeHighRes.getWidth(), sizeHighRes.getHeight(), ImageFormat.JPEG, 2);
+                imageReaderHighRes.setOnImageAvailableListener(jpegListener, backgroundHandler);
+            }
+
+            // 3. SETUP RAW READER
             if (contains(mCharacteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES), CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW)) {
-                // Mặc định lấy size từ map thường
-                StreamConfigurationMap rawMap = map;
-
-                // NẾU CÓ HỖ TRỢ HIGH RES -> ƯU TIÊN LẤY SIZE RAW TỪ MAP HIGH RES
-                // Để đảm bảo RAW luôn to nhất và khớp với chế độ chụp 50MP
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    StreamConfigurationMap highResMap = mCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION);
-                    if (highResMap != null) {
-                        Size[] highResRawSizes = highResMap.getOutputSizes(ImageFormat.RAW_SENSOR);
-                        if (highResRawSizes != null && highResRawSizes.length > 0) {
-                            rawMap = highResMap; // Switch sang dùng map xịn
-                        }
-                    }
-                }
-
-                Size[] rawSizes = rawMap.getOutputSizes(ImageFormat.RAW_SENSOR);
+                StreamConfigurationMap mapRaw = (isDeviceSupportHighRes && mapHighRes != null) ? mapHighRes : mapNormal;
+                Size[] rawSizes = mapRaw.getOutputSizes(ImageFormat.RAW_SENSOR);
                 if (rawSizes != null && rawSizes.length > 0) {
-                    Size rawSize = Collections.max(Arrays.asList(rawSizes), new CompareSizesByArea());
-                    rawImageReader = ImageReader.newInstance(rawSize.getWidth(), rawSize.getHeight(), ImageFormat.RAW_SENSOR, 2);
+                    Size sizeRaw = Collections.max(Arrays.asList(rawSizes), new CompareSizesByArea());
+                    rawImageReader = ImageReader.newInstance(sizeRaw.getWidth(), sizeRaw.getHeight(), ImageFormat.RAW_SENSOR, 2);
                     rawImageReader.setOnImageAvailableListener(rawListener, backgroundHandler);
                 }
             }
 
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
+                ActivityCompat.requestPermissions(this, PERMISSIONS, REQUEST_PERMISSION_CODE);
                 return;
             }
             manager.openCamera(cameraId, stateCallback, backgroundHandler);
@@ -315,56 +249,97 @@ public class MainActivity extends AppCompatActivity {
 
             List<Surface> targets = new ArrayList<>();
             targets.add(surface);
-            targets.add(imageReader.getSurface());
+
+            // CHỌN READER PHÙ HỢP VÀO SESSION
+            if (useHighResMode() && imageReaderHighRes != null) {
+                targets.add(imageReaderHighRes.getSurface());
+            } else {
+                targets.add(imageReaderNormal.getSurface());
+            }
+
             if (rawImageReader != null) targets.add(rawImageReader.getSurface());
 
             captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             captureRequestBuilder.addTarget(surface);
 
             cameraDevice.createCaptureSession(targets, new CameraCaptureSession.StateCallback() {
-                @Override
-                public void onConfigured(@NonNull CameraCaptureSession cameraCaptureSession) {
+                @Override public void onConfigured(@NonNull CameraCaptureSession s) {
                     if (cameraDevice == null) return;
-                    cameraCaptureSessions = cameraCaptureSession;
+                    cameraCaptureSessions = s;
                     applyZoom(currentCropFactor);
+                    updatePreview();
                     runOnUiThread(() -> configureTransform(textureView.getWidth(), textureView.getHeight()));
                 }
-                @Override
-                public void onConfigureFailed(@NonNull CameraCaptureSession session) {}
+                @Override public void onConfigureFailed(@NonNull CameraCaptureSession s) {}
             }, backgroundHandler);
+        } catch (CameraAccessException e) { e.printStackTrace(); }
+    }
+
+    private void updatePreview() {
+        if (cameraDevice == null || captureRequestBuilder == null) return;
+        try {
+            captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+            if (isManualMode) {
+                if (manualManager.isManualExposure()) {
+                    captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF);
+                    captureRequestBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, manualManager.getISO());
+                    captureRequestBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualManager.getShutter());
+                } else { captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON); }
+
+                if (manualManager.isManualFocus()) {
+                    captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
+                    captureRequestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualManager.getFocus());
+                } else { captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE); }
+            } else {
+                captureRequestBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
+                captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            }
+            cameraCaptureSessions.setRepeatingRequest(captureRequestBuilder.build(), captureCallback, backgroundHandler);
         } catch (CameraAccessException e) { e.printStackTrace(); }
     }
 
     private void takePicture() {
         if (null == cameraDevice) return;
         try {
-            // Reset biến chờ RAW mỗi lần chụp mới
             synchronized (mRawLock) {
                 if (mPendingRawImage != null) { mPendingRawImage.close(); mPendingRawImage = null; }
                 mPendingCaptureResult = null;
             }
 
             final CaptureRequest.Builder captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(imageReader.getSurface());
 
+            // LOGIC CHỌN TARGET VÀ SENSOR MODE
+            // Nếu dùng HighRes Mode (Do bật 50MP hoặc RAW) -> Dùng HighRes Reader & Max Res Mode
+            boolean highResActive = useHighResMode() && imageReaderHighRes != null;
+
+            if (highResActive) {
+                captureBuilder.addTarget(imageReaderHighRes.getSurface());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    captureBuilder.set(CaptureRequest.SENSOR_PIXEL_MODE, CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION);
+                }
+                applyZoomToBuilder(captureBuilder, currentCropFactor, sensorArraySizeHighRes);
+            } else {
+                captureBuilder.addTarget(imageReaderNormal.getSurface());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    captureBuilder.set(CaptureRequest.SENSOR_PIXEL_MODE, CameraMetadata.SENSOR_PIXEL_MODE_DEFAULT);
+                }
+                applyZoomToBuilder(captureBuilder, currentCropFactor, sensorArraySize);
+            }
+
+            // RAW
             boolean captureRaw = isRawEnabled && (rawImageReader != null);
             if (captureRaw) {
                 captureBuilder.addTarget(rawImageReader.getSurface());
             }
 
-            boolean useHighRes = isHighResEnabled && isDeviceSupportHighRes && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S;
-            if (useHighRes) captureBuilder.set(CaptureRequest.SENSOR_PIXEL_MODE, CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION);
-
-            Rect activeArray = (useHighRes) ? sensorArraySizeHighRes : sensorArraySize;
-            applyZoomToBuilder(captureBuilder, currentCropFactor, activeArray);
-
+            // Manual Settings
             if (isManualMode) {
+                captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
                 if (manualManager.isManualExposure()) {
                     captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF);
                     captureBuilder.set(CaptureRequest.SENSOR_SENSITIVITY, manualManager.getISO());
                     captureBuilder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, manualManager.getShutter());
                 } else { captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON); }
-
                 if (manualManager.isManualFocus()) {
                     captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF);
                     captureBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, manualManager.getFocus());
@@ -382,219 +357,106 @@ public class MainActivity extends AppCompatActivity {
             cameraCaptureSessions.capture(captureBuilder.build(), new CameraCaptureSession.CaptureCallback() {
                 @Override
                 public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
-                    super.onCaptureCompleted(session, request, result);
-                    // SỬA LỖI MẤT RAW: Gửi result vào hàm xử lý chung
                     processRawCapture(null, result);
-
                     updatePreview();
-                    String msg = captureRaw ? "Đã lưu JPEG + RAW" : "Đã lưu JPEG";
+
+                    String modeInfo = highResActive ? "50MP" : "12MP";
+                    String rawInfo = captureRaw ? " + RAW" : "";
+                    String msg = "Đã lưu: " + modeInfo + rawInfo;
                     runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show());
                 }
             }, backgroundHandler);
         } catch (CameraAccessException e) { e.printStackTrace(); }
     }
 
-    // --- HÀM ĐỒNG BỘ RAW (QUAN TRỌNG) ---
     private void processRawCapture(Image image, TotalCaptureResult result) {
         synchronized (mRawLock) {
             if (image != null) {
-                if (mPendingRawImage != null) mPendingRawImage.close(); // Đóng cái cũ nếu có
+                if (mPendingRawImage != null) mPendingRawImage.close();
                 mPendingRawImage = image;
             }
-            if (result != null) {
-                mPendingCaptureResult = result;
-            }
-
-            // Chỉ lưu khi CẢ HAI đều đã có
+            if (result != null) mPendingCaptureResult = result;
             if (mPendingRawImage != null && mPendingCaptureResult != null) {
                 if (mCharacteristics != null) {
                     DngCreator dngCreator = new DngCreator(mCharacteristics, mPendingCaptureResult);
                     saveRawDng(dngCreator, mPendingRawImage);
                 }
-                // Reset sau khi lưu xong
-                mPendingRawImage.close(); // Quan trọng: Đóng Image sau khi dùng
-                mPendingRawImage = null;
-                mPendingCaptureResult = null;
+                mPendingRawImage.close(); mPendingRawImage = null; mPendingCaptureResult = null;
             }
         }
     }
-
-    // --- LISTENERS ---
-    private final ImageReader.OnImageAvailableListener jpegListener = new ImageReader.OnImageAvailableListener() {
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-            Image image = null;
-            try {
-                image = reader.acquireLatestImage();
-                ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                byte[] bytes = new byte[buffer.capacity()];
-                buffer.get(bytes);
-                Uri savedUri = saveImageToGallery(bytes);
-                lastPhotoUri = savedUri;
-                Bitmap rotatedBitmap = loadBitmapFromBytes(bytes);
-                if (rotatedBitmap != null) {
-                    Bitmap circularBitmap = getCircularBitmap(rotatedBitmap);
-                    runOnUiThread(() -> btnGallery.setImageBitmap(circularBitmap));
-                }
-            } catch (Exception e) { e.printStackTrace(); } finally { if (image != null) image.close(); }
-        }
-    };
-
-    private final ImageReader.OnImageAvailableListener rawListener = new ImageReader.OnImageAvailableListener() {
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-            // Lấy ảnh RAW nhưng KHÔNG đóng ngay
-            Image image = reader.acquireNextImage();
-            if (image != null) {
-                // Gửi vào hàm xử lý chung để đợi CaptureResult
-                processRawCapture(image, null);
-            }
-        }
-    };
-
-    private void saveRawDng(DngCreator dngCreator, Image image) {
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Images.Media.DISPLAY_NAME, "LEITZ_RAW_" + System.currentTimeMillis() + ".dng");
-        values.put(MediaStore.Images.Media.MIME_TYPE, "image/x-adobe-dng");
-        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/LeitzCam");
-        Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-        try {
-            if (uri != null) {
-                OutputStream outputStream = getContentResolver().openOutputStream(uri);
-                if(outputStream != null) {
-                    dngCreator.writeImage(outputStream, image);
-                    outputStream.close();
-                    dngCreator.close();
-                    Log.d("LeitzCam", "Saved RAW: " + uri.toString());
-                }
-            }
-        } catch (IOException e) { e.printStackTrace(); }
-    }
-
-    // --- HELPERS ---
-    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
-        @Override public void onOpened(@NonNull CameraDevice c) { cameraDevice = c; createCameraPreview(); }
-        @Override public void onDisconnected(@NonNull CameraDevice c) { c.close(); }
-        @Override public void onError(@NonNull CameraDevice c, int e) { c.close(); cameraDevice = null; }
-    };
-
-    private final TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() {
-        @Override public void onSurfaceTextureAvailable(@NonNull SurfaceTexture s, int w, int h) { openCamera(); }
-        @Override public void onSurfaceTextureSizeChanged(@NonNull SurfaceTexture s, int w, int h) { configureTransform(w, h); }
-        @Override public boolean onSurfaceTextureDestroyed(@NonNull SurfaceTexture s) { return false; }
-        @Override public void onSurfaceTextureUpdated(@NonNull SurfaceTexture s) {}
-    };
-
-    private final CameraCaptureSession.CaptureCallback captureCallback = new CameraCaptureSession.CaptureCallback() {
-        @Override
-        public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
-            super.onCaptureCompleted(session, request, result);
-            if (!isManualMode) {
-                Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY);
-                Long shutter = result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-                Float focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE);
-                if (manualManager != null) {
-                    manualManager.updateAutoValues(iso != null ? iso : 100, shutter != null ? shutter : 10000000L, focus != null ? focus : 0.0f);
-                }
-            }
-        }
-    };
 
     private void toggleHighResMode() {
+        if (!isDeviceSupportHighRes) {
+            Toast.makeText(this, "Thiết bị không hỗ trợ HighRes", Toast.LENGTH_SHORT).show();
+            return;
+        }
         isHighResEnabled = !isHighResEnabled;
-        if (isHighResEnabled) { btnHighRes.setTextColor(Color.parseColor("#FFD700")); btnHighRes.setAlpha(1.0f); Toast.makeText(this, "50MP ON", Toast.LENGTH_SHORT).show(); }
-        else { btnHighRes.setTextColor(Color.WHITE); btnHighRes.setAlpha(0.5f); Toast.makeText(this, "12MP ON", Toast.LENGTH_SHORT).show(); }
-        closeCamera(); if (textureView.isAvailable()) openCamera(); else textureView.setSurfaceTextureListener(textureListener);
+        if (isHighResEnabled) {
+            btnHighRes.setTextColor(Color.parseColor("#FFD700")); btnHighRes.setAlpha(1.0f);
+        } else {
+            btnHighRes.setTextColor(Color.WHITE); btnHighRes.setAlpha(0.5f);
+        }
+        closeCamera();
+        if (textureView.isAvailable()) openCamera(); else textureView.setSurfaceTextureListener(textureListener);
+    }
+
+    private void toggleRawMode() {
+        isRawEnabled = !isRawEnabled;
+        if (isRawEnabled) {
+            btnRaw.setTextColor(Color.parseColor("#FFD700")); btnRaw.setAlpha(1.0f);
+        } else {
+            btnRaw.setTextColor(Color.WHITE); btnRaw.setAlpha(0.5f);
+        }
+        closeCamera();
+        if (textureView.isAvailable()) openCamera(); else textureView.setSurfaceTextureListener(textureListener);
     }
 
     private void closeCamera() {
-        if(cameraCaptureSessions != null) { cameraCaptureSessions.close(); cameraCaptureSessions = null; }
-        if(cameraDevice != null) { cameraDevice.close(); cameraDevice = null; }
-        if(imageReader != null) { imageReader.close(); imageReader = null; }
-        if(rawImageReader != null) { rawImageReader.close(); rawImageReader = null; }
-        synchronized (mRawLock) { // Đảm bảo đóng ảnh pending nếu thoát app đột ngột
-            if (mPendingRawImage != null) { mPendingRawImage.close(); mPendingRawImage = null; }
-        }
+        if (cameraCaptureSessions != null) { cameraCaptureSessions.close(); cameraCaptureSessions = null; }
+        if (cameraDevice != null) { cameraDevice.close(); cameraDevice = null; }
+        if (imageReaderNormal != null) { imageReaderNormal.close(); imageReaderNormal = null; }
+        if (imageReaderHighRes != null) { imageReaderHighRes.close(); imageReaderHighRes = null; }
+        if (rawImageReader != null) { rawImageReader.close(); rawImageReader = null; }
+        synchronized (mRawLock) { if (mPendingRawImage != null) { mPendingRawImage.close(); mPendingRawImage = null; } }
     }
 
-    private void applyZoom(float cropFactor) { if (cameraDevice != null && captureRequestBuilder != null) { applyZoomToBuilder(captureRequestBuilder, cropFactor, sensorArraySize); updatePreview(); } }
-    private void applyZoomToBuilder(CaptureRequest.Builder builder, float cropFactor, Rect activeArraySize) {
-        int minW = (int) (activeArraySize.width() * (1.0f - cropFactor));
-        int minH = (int) (activeArraySize.height() * (1.0f - cropFactor));
-        int cropX = (activeArraySize.width() - minW) / 2;
-        int cropY = (activeArraySize.height() - minH) / 2;
-        Rect cropRect = new Rect(activeArraySize.left + cropX, activeArraySize.top + cropY, activeArraySize.left + cropX + minW, activeArraySize.top + cropY + minH);
-        builder.set(CaptureRequest.SCALER_CROP_REGION, cropRect);
-    }
-    private void cycleZoom() {
-        if (currentZoomLevel == 1) { currentZoomLevel = 2; txtZoomIndicator.setText("2x"); txtZoomIndicator.setTextColor(Color.parseColor("#FFD700")); currentCropFactor = 0.5f; }
-        else if (currentZoomLevel == 2) { currentZoomLevel = 0; txtZoomIndicator.setText("0.7x"); txtZoomIndicator.setTextColor(Color.WHITE); currentCropFactor = 0.0f; }
-        else { currentZoomLevel = 1; txtZoomIndicator.setText("1x"); txtZoomIndicator.setTextColor(Color.WHITE); currentCropFactor = 0.2f; }
-        applyZoom(currentCropFactor);
-    }
-    private void toggleAspectRatio() {
-        currentRatioIndex++; if (currentRatioIndex > 2) currentRatioIndex = 0;
-        ConstraintSet set = new ConstraintSet(); set.clone(mainLayout);
-        if (currentRatioIndex == 0) set.setDimensionRatio(textureView.getId(), "H,3:4");
-        else if (currentRatioIndex == 1) set.setDimensionRatio(textureView.getId(), "H,1:1");
-        else set.setDimensionRatio(textureView.getId(), "H,9:16");
-        set.applyTo(mainLayout); textureView.post(() -> configureTransform(textureView.getWidth(), textureView.getHeight()));
-    }
-    private void configureTransform(int viewWidth, int viewHeight) {
-        if (null == textureView || null == previewSize) return;
-        Matrix matrix = new Matrix();
-        RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
-        RectF bufferRect = new RectF(0, 0, previewSize.getHeight(), previewSize.getWidth());
-        float centerX = viewRect.centerX(); float centerY = viewRect.centerY();
-        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
-        matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
-        float scale = Math.max((float) viewHeight / previewSize.getWidth(), (float) viewWidth / previewSize.getHeight());
-        matrix.postScale(scale, scale, centerX, centerY);
-        textureView.setTransform(matrix);
-    }
-    private Size chooseOptimalSize(Size[] choices, int w, int h) {
-        List<Size> bigEnough = new ArrayList<>();
-        for (Size option : choices) { if (option.getHeight() == option.getWidth() * h / w && option.getWidth() >= w && option.getHeight() >= h) bigEnough.add(option); }
-        if (bigEnough.size() > 0) return Collections.min(bigEnough, new CompareSizesByArea()); else return choices[0];
-    }
-    private Uri saveImageToGallery(byte[] bytes) {
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.Images.Media.DISPLAY_NAME, "LEITZ_" + System.currentTimeMillis() + ".jpg");
-        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/LeitzCam");
-        Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-        try {
-            OutputStream out = getContentResolver().openOutputStream(uri);
-            if(out!=null){out.write(bytes);out.close();return uri;}
-        } catch(Exception e){e.printStackTrace();} return null;
-    }
-    private void loadLastImage() {
-        new Thread(() -> {
-            try (Cursor cursor = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, new String[]{MediaStore.Images.ImageColumns._ID}, null, null, MediaStore.Images.ImageColumns.DATE_TAKEN + " DESC")) {
-                if (cursor != null && cursor.moveToFirst()) {
-                    Uri imageUri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.ImageColumns._ID)));
-                    lastPhotoUri = imageUri;
-                    Bitmap bitmap = loadBitmapFromUri(imageUri);
-                    if (bitmap != null) runOnUiThread(() -> btnGallery.setImageBitmap(getCircularBitmap(bitmap)));
-                }
-            } catch (Exception e) {}
-        }).start();
-    }
-    private Bitmap loadBitmapFromUri(Uri uri) { try { InputStream i = getContentResolver().openInputStream(uri); Bitmap b = BitmapFactory.decodeStream(i); i.close(); return b; } catch (Exception e) { return null; } }
-    private Bitmap loadBitmapFromBytes(byte[] bytes) { return BitmapFactory.decodeByteArray(bytes, 0, bytes.length); }
-    private Bitmap getCircularBitmap(Bitmap bitmap) {
-        int w = bitmap.getWidth(), h = bitmap.getHeight(); int s = Math.min(w, h);
-        Bitmap o = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
-        Canvas c = new Canvas(o); Paint p = new Paint(); p.setAntiAlias(true);
-        c.drawCircle(s/2f, s/2f, s/2f, p); p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_IN));
-        c.drawBitmap(bitmap, new Rect((w-s)/2, (h-s)/2, (w+s)/2, (h+s)/2), new Rect(0,0,s,s), p);
-        return o;
-    }
+    private final ImageReader.OnImageAvailableListener jpegListener = r -> {
+        Image i = r.acquireLatestImage(); if (i==null) return;
+        ByteBuffer b = i.getPlanes()[0].getBuffer(); byte[] d = new byte[b.capacity()]; b.get(d); i.close();
+        saveImageToGallery(d);
+    };
+
+    private final ImageReader.OnImageAvailableListener rawListener = r -> {
+        Image i = r.acquireNextImage(); if (i != null) processRawCapture(i, null);
+    };
+
+    private void saveRawDng(DngCreator d, Image i) { ContentValues v = new ContentValues(); v.put(MediaStore.Images.Media.DISPLAY_NAME, "RAW_" + System.currentTimeMillis() + ".dng"); v.put(MediaStore.Images.Media.MIME_TYPE, "image/x-adobe-dng"); v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/LeitzCam"); Uri u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v); try { OutputStream o = getContentResolver().openOutputStream(u); if(o!=null) { d.writeImage(o, i); o.close(); d.close(); } } catch (IOException e) { e.printStackTrace(); } }
+    private Uri saveImageToGallery(byte[] bytes) { ContentValues v = new ContentValues(); v.put(MediaStore.Images.Media.DISPLAY_NAME, "IMG_" + System.currentTimeMillis() + ".jpg"); v.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg"); v.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/LeitzCam"); Uri u = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v); try { OutputStream o = getContentResolver().openOutputStream(u); if(o!=null){o.write(bytes);o.close();return u;} } catch(Exception e){} return null; }
+
+    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() { @Override public void onOpened(@NonNull CameraDevice c) { cameraDevice = c; createCameraPreview(); } @Override public void onDisconnected(@NonNull CameraDevice c) { c.close(); } @Override public void onError(@NonNull CameraDevice c, int e) { c.close(); cameraDevice = null; } };
+    private final TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() { @Override public void onSurfaceTextureAvailable(@NonNull SurfaceTexture s, int w, int h) { openCamera(); } @Override public void onSurfaceTextureSizeChanged(@NonNull SurfaceTexture s, int w, int h) { configureTransform(w, h); } @Override public boolean onSurfaceTextureDestroyed(@NonNull SurfaceTexture s) { return false; } @Override public void onSurfaceTextureUpdated(@NonNull SurfaceTexture s) {} };
+    private final CameraCaptureSession.CaptureCallback captureCallback = new CameraCaptureSession.CaptureCallback() { @Override public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) { super.onCaptureCompleted(session, request, result); if (!isManualMode) { Integer iso = result.get(CaptureResult.SENSOR_SENSITIVITY); Long shutter = result.get(CaptureResult.SENSOR_EXPOSURE_TIME); Float focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE); if (manualManager != null) { manualManager.updateAutoValues(iso != null ? iso : 100, shutter != null ? shutter : 10000000L, focus != null ? focus : 0.0f); } } } };
+
     private void startBackgroundThread() { backgroundThread = new HandlerThread("CameraBackground"); backgroundThread.start(); backgroundHandler = new Handler(backgroundThread.getLooper()); }
     private void stopBackgroundThread() { if (backgroundThread != null) { backgroundThread.quitSafely(); try { backgroundThread.join(); } catch (InterruptedException e) {} backgroundThread = null; backgroundHandler = null; } }
-    private boolean contains(int[] modes, int mode) { if (modes == null) return false; for (int i : modes) { if (i == mode) return true; } return false; }
+    private boolean contains(int[] m, int v) { if(m==null)return false; for(int i:m)if(i==v)return true; return false; }
+    private Size chooseOptimalSize(Size[] c, int w, int h) { List<Size> b = new ArrayList<>(); for (Size o : c) { if (o.getHeight() == o.getWidth() * h / w && o.getWidth() >= w && o.getHeight() >= h) b.add(o); } if (b.size() > 0) return Collections.min(b, new CompareSizesByArea()); else return c[0]; }
     static class CompareSizesByArea implements Comparator<Size> { @Override public int compare(Size lhs, Size rhs) { return Long.signum((long) lhs.getWidth() * lhs.getHeight() - (long) rhs.getWidth() * rhs.getHeight()); } }
+    private void applyZoom(float cropFactor) { if (cameraDevice != null && captureRequestBuilder != null) {
+        Rect active = (useHighResMode()) ? sensorArraySizeHighRes : sensorArraySize;
+        applyZoomToBuilder(captureRequestBuilder, cropFactor, active); updatePreview();
+    }}
+    private void applyZoomToBuilder(CaptureRequest.Builder builder, float cropFactor, Rect activeArraySize) { int minW = (int) (activeArraySize.width() * (1.0f - cropFactor)); int minH = (int) (activeArraySize.height() * (1.0f - cropFactor)); int cropX = (activeArraySize.width() - minW) / 2; int cropY = (activeArraySize.height() - minH) / 2; Rect cropRect = new Rect(activeArraySize.left + cropX, activeArraySize.top + cropY, activeArraySize.left + cropX + minW, activeArraySize.top + cropY + minH); builder.set(CaptureRequest.SCALER_CROP_REGION, cropRect); }
+    private void cycleZoom() { if (currentZoomLevel == 1) { currentZoomLevel = 2; txtZoomIndicator.setText("2x"); txtZoomIndicator.setTextColor(Color.parseColor("#FFD700")); currentCropFactor = 0.5f; } else if (currentZoomLevel == 2) { currentZoomLevel = 0; txtZoomIndicator.setText("0.7x"); txtZoomIndicator.setTextColor(Color.WHITE); currentCropFactor = 0.0f; } else { currentZoomLevel = 1; txtZoomIndicator.setText("1x"); txtZoomIndicator.setTextColor(Color.WHITE); currentCropFactor = 0.2f; } applyZoom(currentCropFactor); }
+    private void toggleAspectRatio() { currentRatioIndex++; if (currentRatioIndex > 2) currentRatioIndex = 0; ConstraintSet set = new ConstraintSet(); set.clone(mainLayout); if (currentRatioIndex == 0) set.setDimensionRatio(textureView.getId(), "H,3:4"); else if (currentRatioIndex == 1) set.setDimensionRatio(textureView.getId(), "H,1:1"); else set.setDimensionRatio(textureView.getId(), "H,9:16"); set.applyTo(mainLayout); textureView.post(() -> configureTransform(textureView.getWidth(), textureView.getHeight())); }
+    private void configureTransform(int w, int h) { if (null == textureView || null == previewSize) return; Matrix m = new Matrix(); RectF v = new RectF(0, 0, w, h); RectF b = new RectF(0, 0, previewSize.getHeight(), previewSize.getWidth()); float cx = v.centerX(); float cy = v.centerY(); b.offset(cx - b.centerX(), cy - b.centerY()); m.setRectToRect(v, b, Matrix.ScaleToFit.FILL); float s = Math.max((float) h / previewSize.getWidth(), (float) w / previewSize.getHeight()); m.postScale(s, s, cx, cy); textureView.setTransform(m); }
+    private void loadLastImage() { new Thread(() -> { try (Cursor c = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, new String[]{MediaStore.Images.ImageColumns._ID}, null, null, MediaStore.Images.ImageColumns.DATE_TAKEN + " DESC")) { if (c != null && c.moveToFirst()) { Uri u = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(c.getColumnIndexOrThrow(MediaStore.Images.ImageColumns._ID))); lastPhotoUri = u; Bitmap b = loadBitmapFromUri(u); if (b != null) runOnUiThread(() -> btnGallery.setImageBitmap(getCircularBitmap(b))); } } catch (Exception e) {} }).start(); }
+    private Bitmap loadBitmapFromUri(Uri u) { try { InputStream i = getContentResolver().openInputStream(u); Bitmap b = BitmapFactory.decodeStream(i); i.close(); return b; } catch (Exception e) { return null; } }
+    private Bitmap loadBitmapFromBytes(byte[] b) { return BitmapFactory.decodeByteArray(b, 0, b.length); }
+    private Bitmap getCircularBitmap(Bitmap b) { int w = b.getWidth(), h = b.getHeight(); int s = Math.min(w, h); Bitmap o = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888); Canvas c = new Canvas(o); Paint p = new Paint(); p.setAntiAlias(true); c.drawCircle(s/2f, s/2f, s/2f, p); p.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_IN)); c.drawBitmap(b, new Rect((w-s)/2, (h-s)/2, (w+s)/2, (h+s)/2), new Rect(0,0,s,s), p); return o; }
+
+    @Override public void onRequestPermissionsResult(int r, @NonNull String[] p, @NonNull int[] g) { super.onRequestPermissionsResult(r, p, g); if (r == REQUEST_PERMISSION_CODE) { if (g.length > 0 && g[0] == PackageManager.PERMISSION_GRANTED) { if(textureView.isAvailable()) openCamera(); } else { Toast.makeText(this, "Cần quyền!", Toast.LENGTH_SHORT).show(); }}}
     @Override protected void onResume() { super.onResume(); startBackgroundThread(); loadLastImage(); if (textureView.isAvailable()) openCamera(); else textureView.setSurfaceTextureListener(textureListener); }
     @Override protected void onPause() { stopBackgroundThread(); closeCamera(); super.onPause(); }
-    @Override public void onRequestPermissionsResult(int r, @NonNull String[] p, @NonNull int[] g) { super.onRequestPermissionsResult(r, p, g); if (r == 200 && g[0] != PackageManager.PERMISSION_GRANTED) finish(); }
 }
