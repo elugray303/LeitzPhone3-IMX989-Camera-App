@@ -22,10 +22,15 @@ import android.os.HandlerThread;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.util.Range;
 import android.util.Size;
 import android.view.Surface;
 import android.view.TextureView;
+import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.ImageButton;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -36,7 +41,6 @@ import androidx.core.app.ActivityCompat;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
@@ -44,16 +48,15 @@ public class VideoActivity extends AppCompatActivity {
 
     private TextureView textureView;
     private ImageButton btnRecord;
-    private TextView btnBackToPhoto, txtTimer;
+    private TextView btnSwitchToPhoto, txtTimer;
+    private Spinner spinnerResolution;
 
     private CameraDevice cameraDevice;
     private CameraCaptureSession captureSession;
     private CaptureRequest.Builder captureBuilder;
     private MediaRecorder mediaRecorder;
-    private Size videoSize;
-    private boolean isRecording = false;
 
-    // Biến để lưu file video qua MediaStore
+    private boolean isRecording = false;
     private Uri videoUri;
     private ParcelFileDescriptor pfd;
 
@@ -62,6 +65,18 @@ public class VideoActivity extends AppCompatActivity {
     private long startTime = 0;
     private final Handler timerHandler = new Handler();
 
+    private VideoConfig currentConfig;
+    private List<VideoConfig> supportedConfigs;
+
+    private static class VideoConfig {
+        String label;
+        int width, height, fps, bitrate;
+        public VideoConfig(String label, int w, int h, int fps, int bitrate) {
+            this.label = label; this.width = w; this.height = h; this.fps = fps; this.bitrate = bitrate;
+        }
+        @Override public String toString() { return label; }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -69,32 +84,72 @@ public class VideoActivity extends AppCompatActivity {
 
         textureView = findViewById(R.id.textureView);
         btnRecord = findViewById(R.id.btnRecord);
-        btnBackToPhoto = findViewById(R.id.btnSwitchToPhoto);
+        btnSwitchToPhoto = findViewById(R.id.btnSwitchToPhoto);
         txtTimer = findViewById(R.id.txtTimer);
+        spinnerResolution = findViewById(R.id.spinnerResolution);
+
+        setupVideoConfigs();
+        setupSpinner();
 
         btnRecord.setOnClickListener(v -> {
             if (isRecording) stopRecording();
             else startRecording();
         });
 
-        btnBackToPhoto.setOnClickListener(v -> finish());
+        btnSwitchToPhoto.setOnClickListener(v -> {
+            if (!isRecording) {
+                finish();
+                overridePendingTransition(0, 0);
+            }
+        });
+    }
+
+    private void setupVideoConfigs() {
+        supportedConfigs = new ArrayList<>();
+        supportedConfigs.add(new VideoConfig("8K 24FPS", 7680, 4320, 24, 100_000_000));
+        supportedConfigs.add(new VideoConfig("4K 60FPS", 3840, 2160, 60, 60_000_000));
+        supportedConfigs.add(new VideoConfig("4K 30FPS", 3840, 2160, 30, 50_000_000));
+        supportedConfigs.add(new VideoConfig("FHD 120FPS", 1920, 1080, 120, 40_000_000));
+        supportedConfigs.add(new VideoConfig("FHD 60FPS", 1920, 1080, 60, 30_000_000));
+        supportedConfigs.add(new VideoConfig("FHD 30FPS", 1920, 1080, 30, 20_000_000));
+        currentConfig = supportedConfigs.get(2);
+    }
+
+    // --- CẬP NHẬT GIAO DIỆN SPINNER ĐẸP ---
+    private void setupSpinner() {
+        ArrayAdapter<VideoConfig> adapter = new ArrayAdapter<>(this, R.layout.item_spinner_selected, supportedConfigs);
+        adapter.setDropDownViewResource(R.layout.item_spinner_dropdown);
+        spinnerResolution.setAdapter(adapter);
+        spinnerResolution.setSelection(2);
+
+        spinnerResolution.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                currentConfig = supportedConfigs.get(position);
+                if (cameraDevice != null && !isRecording) startPreview();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
     }
 
     private void startRecording() {
         if (cameraDevice == null || !textureView.isAvailable()) return;
         try {
+            spinnerResolution.setEnabled(false);
+            spinnerResolution.setAlpha(0.5f);
+            btnSwitchToPhoto.setVisibility(View.INVISIBLE);
+
             closePreviewSession();
-            // Setup Recorder TRƯỚC khi tạo Session
             if (!setupMediaRecorder()) {
-                Toast.makeText(this, "Lỗi khởi tạo file video!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Lỗi tạo file!", Toast.LENGTH_SHORT).show();
+                spinnerResolution.setEnabled(true);
                 return;
             }
 
             SurfaceTexture texture = textureView.getSurfaceTexture();
-            texture.setDefaultBufferSize(videoSize.getWidth(), videoSize.getHeight());
+            texture.setDefaultBufferSize(currentConfig.width, currentConfig.height);
             Surface previewSurface = new Surface(texture);
             Surface recorderSurface = mediaRecorder.getSurface();
-
             List<Surface> surfaces = new ArrayList<>();
             surfaces.add(previewSurface);
             surfaces.add(recorderSurface);
@@ -104,72 +159,64 @@ public class VideoActivity extends AppCompatActivity {
             captureBuilder.addTarget(recorderSurface);
             captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
 
+            Range<Integer> fpsRange = new Range<>(currentConfig.fps, currentConfig.fps);
+            captureBuilder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
+
             cameraDevice.createCaptureSession(surfaces, new CameraCaptureSession.StateCallback() {
                 @Override
                 public void onConfigured(@NonNull CameraCaptureSession session) {
                     captureSession = session;
                     try {
-                        // Start Repeating Request
                         captureSession.setRepeatingRequest(captureBuilder.build(), null, backgroundHandler);
-
-                        // Start Recording
                         mediaRecorder.start();
                         isRecording = true;
-
                         runOnUiThread(() -> {
                             btnRecord.setImageResource(android.R.drawable.ic_media_pause);
                             startTime = SystemClock.uptimeMillis();
                             timerHandler.postDelayed(timerRunnable, 0);
                         });
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        stopRecording(); // Stop nếu lỗi start
-                    }
+                    } catch (Exception e) { e.printStackTrace(); stopRecording(); }
                 }
                 @Override public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                    Toast.makeText(VideoActivity.this, "Lỗi cấu hình Camera", Toast.LENGTH_SHORT).show();
+                    runOnUiThread(() -> {
+                        Toast.makeText(VideoActivity.this, "Lỗi cấu hình", Toast.LENGTH_SHORT).show();
+                        stopRecording();
+                    });
                 }
             }, backgroundHandler);
-
         } catch (Exception e) { e.printStackTrace(); }
     }
 
     private void stopRecording() {
         if (!isRecording) return;
         try {
-            // 1. Dừng Camera Session trước
             if (captureSession != null) {
                 captureSession.stopRepeating();
                 captureSession.abortCaptures();
             }
-
-            // 2. Dừng MediaRecorder
             mediaRecorder.stop();
             mediaRecorder.reset();
-
-            // 3. Đóng File Descriptor (Quan trọng để file được lưu hoàn tất)
-            if (pfd != null) {
-                pfd.close();
-                pfd = null;
-            }
-
+            if (pfd != null) { pfd.close(); pfd = null; }
             isRecording = false;
 
             runOnUiThread(() -> {
-                btnRecord.setImageResource(0); // Reset icon (hoặc set lại drawable đỏ)
+                spinnerResolution.setEnabled(true);
+                spinnerResolution.setAlpha(1.0f);
+                btnSwitchToPhoto.setVisibility(View.VISIBLE);
+                btnRecord.setImageResource(0);
                 timerHandler.removeCallbacks(timerRunnable);
                 txtTimer.setText("00:00");
-                Toast.makeText(this, "Đã lưu vào Gallery!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Đã lưu: " + currentConfig.label, Toast.LENGTH_SHORT).show();
             });
-
-            // 4. Khởi động lại Preview để quay tiếp
             startPreview();
-
         } catch (Exception e) {
             e.printStackTrace();
-            // Đôi khi stop fail nếu video quá ngắn, vẫn cần reset
             isRecording = false;
             startPreview();
+            runOnUiThread(() -> {
+                spinnerResolution.setEnabled(true);
+                btnSwitchToPhoto.setVisibility(View.VISIBLE);
+            });
         }
     }
 
@@ -178,14 +225,13 @@ public class VideoActivity extends AppCompatActivity {
         try {
             closePreviewSession();
             SurfaceTexture texture = textureView.getSurfaceTexture();
-            texture.setDefaultBufferSize(videoSize.getWidth(), videoSize.getHeight());
+            texture.setDefaultBufferSize(currentConfig.width, currentConfig.height);
             Surface surface = new Surface(texture);
             captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             captureBuilder.addTarget(surface);
 
             cameraDevice.createCaptureSession(Collections.singletonList(surface), new CameraCaptureSession.StateCallback() {
-                @Override
-                public void onConfigured(@NonNull CameraCaptureSession session) {
+                @Override public void onConfigured(@NonNull CameraCaptureSession session) {
                     captureSession = session;
                     try { captureSession.setRepeatingRequest(captureBuilder.build(), null, backgroundHandler); }
                     catch (CameraAccessException e) { e.printStackTrace(); }
@@ -195,45 +241,33 @@ public class VideoActivity extends AppCompatActivity {
         } catch (CameraAccessException e) { e.printStackTrace(); }
     }
 
-    // --- SETUP RECORDER VỚI MEDIASTORE (FIX LỖI KHÔNG LƯU) ---
     private boolean setupMediaRecorder() {
         try {
             mediaRecorder = new MediaRecorder();
-
-            // 1. Cấu hình Source
             mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
             mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
 
-            // 2. Tạo File qua MediaStore
             ContentValues values = new ContentValues();
-            values.put(MediaStore.Video.Media.DISPLAY_NAME, "LEITZ_VID_" + System.currentTimeMillis());
+            values.put(MediaStore.Video.Media.DISPLAY_NAME, "LEITZ_" + currentConfig.label.replace(" ", "_") + "_" + System.currentTimeMillis());
             values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
             values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/LeitzCam");
 
             videoUri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
             if (videoUri == null) return false;
-
-            // 3. Lấy FileDescriptor để ghi
             pfd = getContentResolver().openFileDescriptor(videoUri, "w");
             if (pfd == null) return false;
-
             mediaRecorder.setOutputFile(pfd.getFileDescriptor());
 
-            // 4. Cấu hình Encoder
-            mediaRecorder.setVideoEncodingBitRate(30000000); // 30Mbps
-            mediaRecorder.setVideoFrameRate(30);
-            mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
+            mediaRecorder.setVideoEncodingBitRate(currentConfig.bitrate);
+            mediaRecorder.setVideoFrameRate(currentConfig.fps);
+            mediaRecorder.setVideoSize(currentConfig.width, currentConfig.height);
             mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
             mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
             mediaRecorder.setOrientationHint(90);
-
             mediaRecorder.prepare();
             return true;
-        } catch (IOException e) {
-            e.printStackTrace();
-            return false;
-        }
+        } catch (IOException e) { e.printStackTrace(); return false; }
     }
 
     private Runnable timerRunnable = new Runnable() {
@@ -251,24 +285,9 @@ public class VideoActivity extends AppCompatActivity {
         CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         try {
             String cameraId = manager.getCameraIdList()[0];
-            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
-            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-            videoSize = chooseVideoSize(map.getOutputSizes(MediaRecorder.class));
-
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return;
             manager.openCamera(cameraId, stateCallback, backgroundHandler);
         } catch (CameraAccessException e) { e.printStackTrace(); }
-    }
-
-    private Size chooseVideoSize(Size[] choices) {
-        // Ưu tiên Full HD hoặc 4K, tránh các size lạ
-        for (Size size : choices) {
-            if (size.getWidth() == 1920 && size.getHeight() == 1080) return size;
-        }
-        for (Size size : choices) {
-            if (size.getWidth() == 3840 && size.getHeight() == 2160) return size;
-        }
-        return choices[0];
     }
 
     private void closePreviewSession() { if (captureSession != null) { captureSession.close(); captureSession = null; } }
@@ -281,12 +300,7 @@ public class VideoActivity extends AppCompatActivity {
     private void stopBackgroundThread() { if(backgroundThread!=null){backgroundThread.quitSafely();try{backgroundThread.join();}catch(Exception e){}backgroundThread=null;backgroundHandler=null;}}
 
     @Override protected void onResume() { super.onResume(); startBackgroundThread(); if (textureView.isAvailable()) openCamera(); else textureView.setSurfaceTextureListener(textureListener); }
-    @Override protected void onPause() {
-        if (isRecording) stopRecording();
-        stopBackgroundThread();
-        if(cameraDevice!=null) cameraDevice.close();
-        super.onPause();
-    }
+    @Override protected void onPause() { if (isRecording) stopRecording(); stopBackgroundThread(); if(cameraDevice!=null) cameraDevice.close(); super.onPause(); }
 
     private final TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() {
         @Override public void onSurfaceTextureAvailable(@NonNull SurfaceTexture s, int w, int h) { openCamera(); }

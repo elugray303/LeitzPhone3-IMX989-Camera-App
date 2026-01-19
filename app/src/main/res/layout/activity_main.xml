@@ -69,8 +69,10 @@
         android:id="@+id/middleControlBar"
         android:layout_width="match_parent"
         android:layout_height="60dp"
+        android:layout_marginBottom="4dp"
         android:paddingHorizontal="30dp"
-        app:layout_constraintBottom_toTopOf="@+id/bottomControlBar">
+        app:layout_constraintBottom_toTopOf="@+id/bottomControlBar"
+        tools:layout_editor_absoluteX="0dp">
 
         <TextView
             android:id="@+id/txtZoomIndicator"
@@ -92,16 +94,18 @@
         android:id="@+id/bottomControlBar"
         android:layout_width="match_parent"
         android:layout_height="100dp"
+        android:layout_marginBottom="4dp"
         android:paddingHorizontal="30dp"
-        app:layout_constraintBottom_toTopOf="@+id/modeSelectorBar">
+        app:layout_constraintBottom_toTopOf="@+id/modeSelectorBar"
+        tools:layout_editor_absoluteX="0dp">
 
         <ImageButton
             android:id="@+id/btnGallery"
             android:layout_width="50dp"
             android:layout_height="50dp"
             android:background="@drawable/bg_zoom_indicator"
-            android:scaleType="centerCrop"
             android:padding="2dp"
+            android:scaleType="centerCrop"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
@@ -125,10 +129,10 @@
             android:layout_height="50dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_switch_camera"
-            app:tint="#FFFFFF"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
+            app:layout_constraintTop_toTopOf="parent"
+            app:tint="#FFFFFF" />
     </androidx.constraintlayout.widget.ConstraintLayout>
 
     <LinearLayout
@@ -312,53 +316,56 @@
         android:id="@+id/modeSelectorBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_marginBottom="52dp"
         android:gravity="center"
         android:orientation="horizontal"
         android:paddingVertical="16dp"
-        app:layout_constraintBottom_toBottomOf="parent">
+        app:layout_constraintBottom_toBottomOf="parent"
+        tools:layout_editor_absoluteX="0dp">
 
         <TextView
             android:id="@+id/modeVideo"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:fontFamily="@font/leica_font"
             android:paddingHorizontal="12dp"
             android:text="VIDEO"
             android:textColor="#FFFFFF"
             android:textSize="14sp"
-            android:textStyle="bold"
-            android:fontFamily="@font/leica_font" />
+            android:textStyle="bold" />
 
         <TextView
             android:id="@+id/modePhoto"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:fontFamily="@font/leica_font"
             android:paddingHorizontal="12dp"
             android:text="PHOTO"
             android:textColor="#D32F2F"
             android:textSize="14sp"
-            android:textStyle="bold"
-            android:fontFamily="@font/leica_font" />
+            android:textStyle="bold" />
+
         <TextView
             android:id="@+id/modeManual"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:fontFamily="@font/leica_font"
             android:paddingHorizontal="12dp"
             android:text="MANUAL"
             android:textColor="#FFFFFF"
             android:textSize="14sp"
-            android:textStyle="bold"
-            android:fontFamily="@font/leica_font" />
+            android:textStyle="bold" />
 
         <TextView
             android:id="@+id/modeLeitz"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:fontFamily="@font/leica_font"
             android:paddingHorizontal="12dp"
             android:text="LEITZ LOOKS"
             android:textColor="#FFFFFF"
             android:textSize="14sp"
-            android:textStyle="bold"
-            android:fontFamily="@font/leica_font" />
+            android:textStyle="bold" />
     </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
