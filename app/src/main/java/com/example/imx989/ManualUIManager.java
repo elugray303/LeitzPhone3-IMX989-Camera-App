@@ -24,7 +24,7 @@ public class ManualUIManager {
     private final long REQ_MIN_SHUTTER_NS = 100_000L;        // 1/10000s
     private final long REQ_MAX_SHUTTER_NS = 30_000_000_000L; // 30s
 
-    // Hardware Limits (From Camera)
+    // Hardware Limits
     private Range<Integer> isoRange;
     private Range<Long> shutterRange;
     private float minFocusDist = 0.0f;
@@ -44,13 +44,13 @@ public class ManualUIManager {
     private long lastAutoShutter = 10000000L;
     private float lastAutoFocus = 0.0f;
 
-    // Callback to update preview
+    // Callback
     private final Runnable updatePreviewCallback;
 
     public ManualUIManager(Activity activity, Runnable updatePreviewCallback) {
         this.updatePreviewCallback = updatePreviewCallback;
 
-        // Binding Views
+        // Binding Views from Activity
         manualPanel = activity.findViewById(R.id.manualPanel);
         sliderContainer = activity.findViewById(R.id.sliderContainer);
         sharedSlider = activity.findViewById(R.id.sharedSlider);
@@ -77,19 +77,20 @@ public class ManualUIManager {
         this.lastAutoISO = iso;
         this.lastAutoShutter = shutter;
         this.lastAutoFocus = focus;
+        // Update UI if values are Auto
+        if (manualPanel.getVisibility() == View.VISIBLE) updateDisplayTexts();
     }
 
     // Getters for CameraRequest
     public int getISO() { return manualISO > 0 ? manualISO : lastAutoISO; }
     public long getShutter() { return manualShutter > 0 ? manualShutter : lastAutoShutter; }
-    public float getFocus() { return manualFocus; } // 0.0f will handle logic in Main
+    public float getFocus() { return manualFocus; }
 
     public boolean isManualExposure() { return manualISO > 0 || manualShutter > 0; }
     public boolean isManualFocus() { return manualFocus > 0; }
 
     public void show() {
         manualPanel.setVisibility(View.VISIBLE);
-        // Inherit Auto values visually but keep actual manual values as 0 (Auto) until touched
         updateDisplayTexts();
     }
 
@@ -97,15 +98,13 @@ public class ManualUIManager {
         manualPanel.setVisibility(View.GONE);
         sliderContainer.setVisibility(View.GONE);
         currentParamMode = ParameterMode.NONE;
-        // Reset manual overrides so Auto takes over
+        // Reset manual overrides
         manualISO = 0;
         manualShutter = 0;
         manualFocus = 0.0f;
-        updateDisplayTexts();
     }
 
     private void updateDisplayTexts() {
-        // Display Manual value if set, otherwise display Auto (Spy) value
         int displayISO = (manualISO > 0) ? manualISO : lastAutoISO;
         long displayShutter = (manualShutter > 0) ? manualShutter : lastAutoShutter;
         float displayFocus = (manualFocus > 0) ? manualFocus : lastAutoFocus;
@@ -130,9 +129,8 @@ public class ManualUIManager {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (!fromUser) return;
-
                 long currentTime = System.currentTimeMillis();
-                if (currentTime - lastSliderUpdateTime < 30) return; // Throttle
+                if (currentTime - lastSliderUpdateTime < 30) return;
                 lastSliderUpdateTime = currentTime;
 
                 handleSliderChange(progress);
@@ -170,7 +168,6 @@ public class ManualUIManager {
         currentParamMode = mode;
         sliderContainer.setVisibility(View.VISIBLE);
 
-        // Reset UI Highlights
         btnParamISO.setBackgroundResource(R.drawable.bg_param_button);
         btnParamShutter.setBackgroundResource(R.drawable.bg_param_button);
         btnParamFocus.setBackgroundResource(R.drawable.bg_param_button);
